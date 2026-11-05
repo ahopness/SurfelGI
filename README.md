@@ -67,6 +67,14 @@ Assets load at runtime and are not downloaded during build. The loader searches 
 
 The presets, in keyboard order, are Cornell Box, Leonardo, Occlusion test, Marble Bust, Sponza (Heavy), and Sponza with Beast. The overlay also provides combined, direct-only, and indirect-only output; half-resolution GI; staggered updates; sun controls; integrator settings; and radial occlusion controls.
 
+## Probe fallback
+
+`ProbeFallbackPass` maintains five toroidal 16³ probe grids with 1, 2, 4, 8, and 16 world-unit spacing. The cache uses approximately 4.4 MiB, storing six diffuse lighting lobes, six depth-moment pairs, world-cell tags, and bounded relocation offsets per probe. Each frame refreshes a spatially permuted 1/16 cohort (1,280 probes × 8 rays = 10,240 primary rays, plus applicable direct-light shadow rays). Lighting is temporally accumulated; initial filling and resets are progressive over sixteen frames rather than tracing the entire cache at once.
+
+Misses sample the renderer's HDR skybox with the GI environment intensity and mip settings, using the same HDR outlier compression as the surfel integrator. Hits evaluate shadowed direct diffuse lighting without additional surfel GI lookups. A majority of back-face hits triggers best-effort bounded relocation; embedded probes remain invalid. Camera scrolling invalidates reused slots by world-cell tag. Surfel resets and scene changes reset the probe cache too.
+
+The resolve gathers eight neighboring probes only when surfel confidence is insufficient. Sparse or occluded neighborhoods contribute according to their interpolation support, and coarser levels fill the remainder; a tiny surviving sample cannot become a full-strength estimate just by normalization. Surfel overlap and lighting maturity are tracked separately so young surfels do not prematurely suppress the fallback. Provisional surfel lighting is retained where the probe cache has not initialized yet. Six-direction depth moments deliberately permit leakage. This is a coarse, slowly refreshed hole filler, so thin walls, sudden lighting changes, and fast camera motion can expose inaccuracies. It does not guarantee indirect lighting where all levels remain invalid or have not initialized yet.
+
 ## GPU self-test
 
 The self-test does not open the interactive window, but it still requires a WebGPU adapter, native libraries, and the scene assets:
@@ -82,7 +90,7 @@ dotnet run --project SurfelGI.csproj -- --self-test 4 12 capture
 dotnet run --project SurfelGI.csproj -- --smoke-frames 8
 ```
 
-For `--self-test`, the optional positional arguments are the zero-based scene index and frame count. Additional options include `capture`, `surfel-stats`, `full-resolution`, `indirect`, `direct`, `reference` (disable staggered updates), and `camera-sweep`. Captures are saved to `/tmp/nativegiya-<sceneIndex>.png`; `surfel-stats` also saves selected frames to `/tmp/nativegiya-stability-<frame>.png`.
+For `--self-test`, the optional positional arguments are the zero-based scene index and frame count. Additional options include `capture`, `surfel-stats`, `full-resolution`, `indirect`, `direct`, `reference` (disable staggered updates), and `camera-sweep`, and `no-surfels` (exercise probe lighting with surfel allocation disabled). Captures are saved to `/tmp/nativegiya-<sceneIndex>.png`; `surfel-stats` also saves selected frames to `/tmp/nativegiya-stability-<frame>.png`.
 
 The self-test checks GPU struct sizes, shader availability, asset decoding, BVH construction, surfel scheduling, resolve behavior in crowded grid cells, and GPU frame execution. It changes camera, lighting, and resolution during the run, so it is not a fixed-camera image comparison test.
 
@@ -102,4 +110,4 @@ The build copies WGSL shaders to the output directory. Edit the source shaders u
 
 ## Current limitations
 
-Indirect lighting depends on surfel coverage and takes time to converge. Areas without surfels have no indirect-lighting fallback, so they can remain black in indirect-only mode while coverage builds. Dense grid cells require more lookup work, and larger scenes increase BVH construction and ray-tracing costs.
+Indirect lighting depends on surfel coverage and takes time to converge. Areas without settled surfels use a coarse world-space probe fallback, sampled from the same HDR skybox used by the composite pass and from shadowed direct lighting at ray hits. Dense grid cells require more lookup work, and larger scenes increase BVH construction and ray-tracing costs.

@@ -18,6 +18,8 @@ public struct ResolveUniforms
     public uint Height;
     public uint ResolveOffset;
     public uint Frame;
+    public uint SourceMode;
+    public uint Pad0, Pad1, Pad2;
 }
 
 public unsafe class SurfelGiResolvePass : IDisposable
@@ -57,7 +59,7 @@ public unsafe class SurfelGiResolvePass : IDisposable
         GBufferPass gbuffer,
         SurfelPool pool,
         SurfelHashGrid grid,
-        OcclusionSettings occlusion, bool halfResolution = true)
+        OcclusionSettings occlusion, ProbeFallbackPass fallback, bool halfResolution = true, GiSourceMode sourceMode = GiSourceMode.SurfelAndProbe)
     {
         int width = halfResolution ? (gbuffer.Width + 1) / 2 : gbuffer.Width;
         int height = halfResolution ? (gbuffer.Height + 1) / 2 : gbuffer.Height;
@@ -76,11 +78,12 @@ public unsafe class SurfelGiResolvePass : IDisposable
             Width = (uint)width,
             Height = (uint)height,
             ResolveOffset = writeOffset,
-            Frame = _ctx.FrameIndex
+            Frame = _ctx.FrameIndex,
+            SourceMode = (uint)sourceMode
         };
         _uniformBuffer.UploadSingle(in uData);
 
-        Span<BindGroupEntry> entries = stackalloc BindGroupEntry[9]
+        Span<BindGroupEntry> entries = stackalloc BindGroupEntry[10]
         {
             _uniformBuffer.AsBindGroupEntry(0),
             gbuffer.DepthTexture.AsTextureEntry(1),
@@ -90,7 +93,8 @@ public unsafe class SurfelGiResolvePass : IDisposable
             grid.OffsetsAndListBuffer.AsBindGroupEntry(5),
             pool.TouchedAtomicBuffer.AsBindGroupEntry(6),
             pool.SurfelDepthBuffer.AsBindGroupEntry(7),
-            OutputTexture.AsTextureEntry(8)
+            OutputTexture.AsTextureEntry(8),
+            fallback.Buffer.AsBindGroupEntry(9)
         };
 
         BindGroup* bg = _shaders.CreateBindGroup(_pipeline, 0, entries, "SurfelResolveBG");

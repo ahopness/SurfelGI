@@ -29,7 +29,12 @@ public enum ScreenDebugMode : uint
     RadialDepthTile = 15,
     Variance = 16,
     AlbedoBVH = 17,
-    AlbedoMatch = 18
+    AlbedoMatch = 18,
+    ProbeValidity = 19,
+    ProbeIrradiance = 20,
+    ProbeDepth = 21,
+    ProbeRelocation = 22,
+    ProbeFallbackLighting = 23
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
@@ -63,6 +68,7 @@ public struct BlitUniforms
 public unsafe class SurfelScreenDebugPass : IDisposable
 {
     private readonly WebGpuContext _ctx;
+    private readonly ProbeDebugPass _probeDebug;
     private readonly ShaderManager _shaders;
     private readonly GpuBuffer<DebugUniforms> _uniformBuffer;
     private readonly GpuBuffer<BlitUniforms> _blitUniformBuffer;
@@ -73,6 +79,10 @@ public unsafe class SurfelScreenDebugPass : IDisposable
     private RenderPipeline* _blitPipeline;
 
     public ScreenDebugMode Mode { get; set; } = ScreenDebugMode.Off;
+    public int ProbeLevel { get; set; }
+    public float ProbeRadius { get; set; } = 0.08f;
+    public bool ProbeXray { get; set; }
+    public float ProbeExposure { get; set; } = 1f;
     public float VarianceScale { get; set; } = 1.0f;
     public int MaxFetchPerPixel { get; set; } = 1024;
 
@@ -80,6 +90,7 @@ public unsafe class SurfelScreenDebugPass : IDisposable
     {
         _ctx = ctx;
         _shaders = shaders;
+        _probeDebug = new ProbeDebugPass(ctx, shaders);
         _uniformBuffer = new GpuBuffer<DebugUniforms>(ctx, 1, BufferUsage.Uniform, "DebugUniforms");
         _blitUniformBuffer = new GpuBuffer<BlitUniforms>(ctx, 1, BufferUsage.Uniform, "BlitUniforms");
         OverlayBuffer = new GpuBuffer<Vector4>(ctx, Math.Max(1, ctx.Width * ctx.Height), BufferUsage.Storage, "DebugOverlayBuffer");
@@ -173,10 +184,16 @@ public unsafe class SurfelScreenDebugPass : IDisposable
         SurfelFindMissingPass find,
         SceneBvhBundle bvh,
         OcclusionSettings occlusion,
-        Vector3 prevCameraPos)
+        Vector3 prevCameraPos,
+        ProbeFallbackPass fallback)
     {
         if (Mode == ScreenDebugMode.Off)
             return;
+
+        if (Mode >= ScreenDebugMode.ProbeValidity) {
+            _probeDebug.Render(encoder, targetView, camera, gbuffer, fallback, this);
+            return;
+        }
 
         int width = gbuffer.Width;
         int height = gbuffer.Height;
@@ -294,6 +311,7 @@ public unsafe class SurfelScreenDebugPass : IDisposable
     public void Dispose()
     {
         if (_blitPipeline != null) _ctx.Wgpu.RenderPipelineRelease(_blitPipeline);
+        _probeDebug.Dispose();
         OverlayBuffer.Dispose();
         _blitUniformBuffer.Dispose();
         _uniformBuffer.Dispose();

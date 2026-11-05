@@ -9,6 +9,14 @@ public enum GiOutputMode : uint
     Indirect = 2
 }
 
+public enum GiSourceMode : uint
+{
+    AmbientOnly = 0,
+    ProbeOnly = 1,
+    SurfelOnly = 2,
+    SurfelAndProbe = 3
+}
+
 public class OcclusionSettings
 {
     public float ShadowStrength = 1.2f;
@@ -30,6 +38,7 @@ public class OcclusionSettings
 public class GiTransportSettings
 {
     public GiOutputMode Mode = GiOutputMode.Combined;
+    public GiSourceMode SourceMode = GiSourceMode.SurfelAndProbe;
     public bool HalfResolutionGi = true;
     public bool StaggerUpdates = true;
     public float Exposure = 1.0f;
@@ -44,6 +53,7 @@ public class GiTransportSettings
     public void ResetDefaults()
     {
         Mode = GiOutputMode.Combined;
+        SourceMode = GiSourceMode.SurfelAndProbe;
         Exposure = 1.0f;
         IndirectIntensity = 1.0f;
         BaseSampleCount = 4;

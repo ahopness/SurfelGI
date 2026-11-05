@@ -51,6 +51,11 @@ public sealed unsafe class ImGuiController : IDisposable
         "Indirect Only"
     };
 
+    private static readonly string[] GiSourceLabels =
+    {
+        "Off (Ambient Only)", "Probe Only", "Surfel Only", "Surfel + Probe"
+    };
+
     private static readonly string[] DebugModeLabels =
     {
         "Off",
@@ -71,7 +76,12 @@ public sealed unsafe class ImGuiController : IDisposable
         "Radial Depth Tile",
         "Variance",
         "Albedo BVH",
-        "Albedo Match"
+        "Albedo Match",
+        "Probes: Validity",
+        "Probes: Irradiance",
+        "Probes: Depth",
+        "Probes: Relocation",
+        "Probes: Fallback Lighting"
     };
 
     private const string ImGuiWgsl = @"
@@ -402,9 +412,31 @@ fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
             // 6. Debug Folder
             if (ImGui.CollapsingHeader("Debug", ImGuiTreeNodeFlags.DefaultOpen))
             {
+                int sourceMode = (int)gi.SourceMode;
+                if (ImGui.Combo("GI Mode", ref sourceMode, GiSourceLabels, GiSourceLabels.Length))
+                    gi.SourceMode = (GiSourceMode)sourceMode;
+
                 int dbgMode = (int)debugPass.Mode;
                 if (ImGui.Combo("Debug Mode", ref dbgMode, DebugModeLabels, DebugModeLabels.Length))
                     debugPass.Mode = (ScreenDebugMode)dbgMode;
+
+                if (debugPass.Mode >= ScreenDebugMode.ProbeValidity) {
+                    if (debugPass.Mode != ScreenDebugMode.ProbeFallbackLighting) {
+                        int level = debugPass.ProbeLevel;
+                        if (ImGui.SliderInt("Probe Level", ref level, 0, 4)) debugPass.ProbeLevel = level;
+                        ImGui.Text($"Spacing: {1 << level} world units");
+                        float radius = debugPass.ProbeRadius;
+                        if (ImGui.SliderFloat("Probe Radius", ref radius, 0.02f, 0.25f)) debugPass.ProbeRadius = radius;
+                        bool xray = debugPass.ProbeXray;
+                        if (ImGui.Checkbox("Probe X-Ray", ref xray)) debugPass.ProbeXray = xray;
+                    }
+                    float exposure = debugPass.ProbeExposure;
+                    if (ImGui.SliderFloat("Probe Exposure", ref exposure, 0.1f, 10f)) debugPass.ProbeExposure = exposure;
+                    if (debugPass.Mode == ScreenDebugMode.ProbeValidity) ImGui.TextWrapped("Red: invalid. Amber: newly initialized. Green: accumulated updates.");
+                    if (debugPass.Mode == ScreenDebugMode.ProbeDepth) ImGui.TextWrapped("Directional mean distance: black = nearby, white = 8 probe spacings.");
+                    if (debugPass.Mode == ScreenDebugMode.ProbeRelocation) ImGui.TextWrapped("RGB = absolute X/Y/Z offset. Black = unmoved. Red also marks invalid unmoved probes.");
+                    if (debugPass.Mode == ScreenDebugMode.ProbeFallbackLighting) ImGui.TextWrapped("Probe estimate on surfaces, before albedo and surfel blending. Magenta = no usable probes. Uses automatic level selection.");
+                }
 
                 float varScale = debugPass.VarianceScale;
                 if (ImGui.SliderFloat("Variance Scale", ref varScale, 0.1f, 10f))

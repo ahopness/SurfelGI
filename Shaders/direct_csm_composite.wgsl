@@ -18,7 +18,8 @@ struct CompositeUniforms {
     shadowBias: f32,
     exposure: f32,
     csmEnabled: u32,
-    _pad0: u32,
+    sourceMode: u32,
+    ambientParams: vec4f,
 };
 
 @group(0) @binding(0) var<uniform> u: CompositeUniforms;
@@ -56,6 +57,22 @@ fn envEquirectUV(dirW: vec3f) -> vec2f {
     let uCoord = atan2(d.z, d.x) * (0.5 / PI) + 0.5;
     let vCoord = acos(clamp(d.y, -1.0, 1.0)) / PI;
     return vec2f(uCoord, vCoord);
+}
+
+// A coarse, unoccluded diffuse sky estimate for the GI-off comparison.
+fn skyAmbient(normal: vec3f) -> vec3f {
+    var light = vec3f(0.0);
+    var weight = 0.0;
+    for (var axis = 0u; axis < 3u; axis++) {
+        for (var side = 0u; side < 2u; side++) {
+            var direction = vec3f(0.0);
+            direction[axis] = select(1.0, -1.0, side != 0u);
+            let w = max(0.0, dot(normal, direction));
+            light += textureSampleLevel(texEnv, envSampler, envEquirectUV(direction), max(4.0, u.ambientParams.y)).rgb * w;
+            weight += w;
+        }
+    }
+    return light * u.ambientParams.x / max(weight, 1e-5);
 }
 
 fn shadowMatrix(c: i32) -> mat4x4f {
@@ -167,7 +184,9 @@ fn evalPixelLinear(px: vec2i, uv: vec2f) -> vec3f {
     let N = normalize(normRough.xyz * 2.0 - 1.0);
     let roughness = clamp(normRough.w, 0.05, 1.0);
     let albedo = textureLoad(texAlbedo, px, 0).rgb;
-    let giIrr = gatherGi(uv, N, -viewPos.z);
+    var giIrr = vec3f(0.0);
+    if (u.sourceMode == 0u) { giIrr = skyAmbient(N); }
+    else { giIrr = gatherGi(uv, N, -viewPos.z); }
 
     let L = normalize(u.lightDir.xyz);
     let V = normalize(u.camPos.xyz - worldPos);

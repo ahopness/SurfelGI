@@ -58,6 +58,7 @@ internal static unsafe class Program
         SurfelAllocatePass? allocatePass = null;
         SurfelIntegratePass? integratePass = null;
         SurfelGiResolvePass? resolvePass = null;
+        ProbeFallbackPass? fallbackPass = null;
         CompositePass? compositePass = null;
         SurfelScreenDebugPass? debugPass = null;
         ImGuiController? imgui = null;
@@ -145,6 +146,7 @@ internal static unsafe class Program
             allocatePass = new SurfelAllocatePass(ctx, shaders);
             integratePass = new SurfelIntegratePass(ctx, shaders, blueNoiseTex);
             resolvePass = new SurfelGiResolvePass(ctx, shaders);
+            fallbackPass = new ProbeFallbackPass(ctx, shaders);
             compositePass = new CompositePass(ctx, shaders);
             debugPass = new SurfelScreenDebugPass(ctx, shaders);
             imgui = new ImGuiController(ctx);
@@ -220,7 +222,7 @@ internal static unsafe class Program
                 hashGrid == null || preparePass == null || findMissingPass == null ||
                 allocDispatchPass == null || integratorDispatchPass == null ||
                 agePass == null || allocatePass == null || integratePass == null ||
-                resolvePass == null || compositePass == null || debugPass == null ||
+                fallbackPass == null || resolvePass == null || compositePass == null || debugPass == null ||
                 imgui == null || bvhBundle == null)
                 return;
 
@@ -283,6 +285,7 @@ internal static unsafe class Program
             gbuffer.Execute(encoder, scene, camera);
 
             // 3. Surfel Prepare Pass (Init pool or reset per-frame counters)
+            fallbackPass.Run(encoder, bvhBundle, camera, scene.DirLight, envTex, giSettings, forceClearSurfels);
             preparePass.Run(encoder, surfelPool, forceClearSurfels);
             forceClearSurfels = false;
 
@@ -318,7 +321,7 @@ internal static unsafe class Program
                 integratorDispatchPass.IndirectArgsBuffer);
 
             // 11. Screen-Space Surfel GI Resolve Pass
-            resolvePass.Run(encoder, camera, gbuffer, surfelPool, hashGrid, occlusionSettings, giSettings.HalfResolutionGi);
+            resolvePass.Run(encoder, camera, gbuffer, surfelPool, hashGrid, occlusionSettings, fallbackPass, giSettings.HalfResolutionGi, giSettings.SourceMode);
 
             // 12. Direct CSM + Resolved GI + Skybox + Reinhard Composite
             compositePass.Execute(encoder, swapchainView, camera, scene, gbuffer, resolvePass, csm, envTex, giSettings);
@@ -334,7 +337,7 @@ internal static unsafe class Program
                 findMissingPass,
                 bvhBundle,
                 occlusionSettings,
-                prevCameraPos);
+                prevCameraPos, fallbackPass);
 
             // 14. ImGui UI Overlay
             imgui.Render(encoder, swapchainView, ctx.Width, ctx.Height);
@@ -368,6 +371,7 @@ internal static unsafe class Program
             debugPass?.Dispose();
             compositePass?.Dispose();
             resolvePass?.Dispose();
+            fallbackPass?.Dispose();
             integratePass?.Dispose();
             allocatePass?.Dispose();
             agePass?.Dispose();
@@ -483,6 +487,7 @@ internal static unsafe class Program
         using var shaders = new ShaderManager(ctx);
         ScheduleValidation.Run(ctx, shaders);
         SurfelResolveValidation.Run(ctx, shaders);
+        ProbeFallbackValidation.Run(ctx, shaders);
         var assets = new AssetLoader(ctx);
         using var blueNoiseTex = assets.LoadBlueNoiseTexture();
         var camera = new Camera { Aspect = (float)ctx.Width / ctx.Height };
@@ -503,6 +508,7 @@ internal static unsafe class Program
         using var allocatePass = new SurfelAllocatePass(ctx, shaders);
         using var integratePass = new SurfelIntegratePass(ctx, shaders, blueNoiseTex);
         using var resolvePass = new SurfelGiResolvePass(ctx, shaders);
+        using var fallbackPass = new ProbeFallbackPass(ctx, shaders);
         using var compositePass = new CompositePass(ctx, shaders);
         using var debugPass = new SurfelScreenDebugPass(ctx, shaders);
         using var imgui = new ImGuiController(ctx);
@@ -550,16 +556,28 @@ internal static unsafe class Program
             CommandEncoder* encoder = ctx.Wgpu.DeviceCreateCommandEncoder(ctx.Device, in encDesc);
             csm.Execute(encoder, scene, camera);
             gbuffer.Execute(encoder, scene, camera);
+            fallbackPass.Run(encoder, bvhBundle, camera, scene.DirLight, envGpu, giSettings, testFrame == 0);
             preparePass.Run(encoder, surfelPool, testFrame == 0);
             int tileCount = findMissingPass.Run(encoder, camera, gbuffer, surfelPool, hashGrid, previousPosition);
             allocDispatchPass.Run(encoder, surfelPool);
             agePass.Run(encoder, surfelPool, hashGrid, previousPosition, allocDispatchPass.IndirectArgsBuffer);
-            allocatePass.Run(encoder, surfelPool, findMissingPass, tileCount);
+            if (!args.Contains("no-surfels")) allocatePass.Run(encoder, surfelPool, findMissingPass, tileCount);
             integratorDispatchPass.Run(encoder, surfelPool);
             hashGrid.Build(encoder, surfelPool, camera, integratorDispatchPass.IndirectArgsBuffer);
             integratePass.Run(encoder, surfelPool, bvhBundle, hashGrid, camera, scene.DirLight, envGpu, giSettings, occlusionSettings, integratorDispatchPass.IndirectArgsBuffer);
-            resolvePass.Run(encoder, camera, gbuffer, surfelPool, hashGrid, occlusionSettings, giSettings.HalfResolutionGi);
+            if (args.Contains("gi-mode-tests")) giSettings.SourceMode = (GiSourceMode)(testFrame % 4);
+            foreach (var option in args)
+                if (option.StartsWith("gi-source=") && int.TryParse(option[10..], out int sourceMode)) giSettings.SourceMode = (GiSourceMode)Math.Clamp(sourceMode, 0, 3);
+            resolvePass.Run(encoder, camera, gbuffer, surfelPool, hashGrid, occlusionSettings, fallbackPass, giSettings.HalfResolutionGi, giSettings.SourceMode);
             compositePass.Execute(encoder, offscreenTarget.View, camera, scene, gbuffer, resolvePass, csm, envGpu, giSettings);
+            if (args.Contains("probe-debug-tests")) debugPass.Mode = (ScreenDebugMode)(19 + testFrame % 5);
+            foreach (var option in args) {
+                if (option.StartsWith("probe-debug=") && int.TryParse(option[12..], out int mode) && mode >= 19 && mode <= 23) debugPass.Mode = (ScreenDebugMode)mode;
+                if (option.StartsWith("probe-level=") && int.TryParse(option[12..], out int level)) debugPass.ProbeLevel = Math.Clamp(level, 0, 4);
+            }
+            debugPass.ProbeXray = args.Contains("probe-xray");
+            debugPass.RunAndRenderOverlay(encoder, offscreenTarget.View, camera, gbuffer, surfelPool, hashGrid,
+                findMissingPass, bvhBundle, occlusionSettings, previousPosition, fallbackPass);
             imgui.UpdateInput(1f / 60f, gbuffer.Width, gbuffer.Height, Vector2.Zero, false, false, 0f);
             imgui.BuildUi(lighting, giSettings, occlusionSettings, debugPass);
             imgui.Render(encoder, offscreenTarget.View, gbuffer.Width, gbuffer.Height);
@@ -572,6 +590,10 @@ internal static unsafe class Program
             ctx.Wgpu.CommandEncoderRelease(encoder);
             ctx.Wgpu.DeviceWaitIdle(ctx.Device);
             if (ctx.LastError != null) throw new InvalidOperationException(ctx.LastError);
+            if (args.Contains("gi-mode-tests") && testFrame >= frameCount - 4)
+                FrameCapture.Save(ctx, offscreenTarget, $"/tmp/nativegiya-gi-mode-{(int)giSettings.SourceMode}.png");
+            if (args.Contains("probe-debug-tests") && testFrame >= frameCount - 5)
+                FrameCapture.Save(ctx, offscreenTarget, $"/tmp/nativegiya-probes-{(int)debugPass.Mode}.png");
             if (args.Contains("surfel-stats") && (testFrame < 8 || testFrame >= frameCount-4)) {
                 var live = FrameCapture.ReadBuffer(ctx,surfelPool.SurfelBuffer).Where(s => s.Age < Constants.SURFEL_TTL).ToArray();
                 Console.WriteLine($"[Surfels] frame={testFrame} live={live.Length} born={live.Count(s => s.PosB.W == testFrame)}");
@@ -580,6 +602,30 @@ internal static unsafe class Program
             if (testFrame >= 8) steadyMilliseconds += frameWatch.Elapsed.TotalMilliseconds;
             surfelPool.SwapMoments(); ctx.FrameIndex++;
         }
+        if (args.Contains("no-surfels") && FrameCapture.ReadBuffer(ctx, surfelPool.SurfelBuffer).Any(s => s.Age < Constants.SURFEL_TTL))
+            throw new InvalidOperationException("Fallback-only validation unexpectedly allocated surfels.");
+        var probeData = FrameCapture.ReadBuffer(ctx, fallbackPass.Buffer);
+        int validProbes = 0;
+        for (int probe = 0; probe < ProbeFallbackPass.ProbeCount; probe++) {
+            if (probeData[probe * 14 + 1].W <= 0) continue;
+            validProbes++;
+            var key = probeData[probe * 14];
+            int level = probe / 4096;
+            int x = BitConverter.SingleToInt32Bits(key.X), y = BitConverter.SingleToInt32Bits(key.Y), z = BitConverter.SingleToInt32Bits(key.Z);
+            float spacing = 1 << level;
+            var origin = new Vector3(MathF.Floor(camera.Position.X / spacing), MathF.Floor(camera.Position.Y / spacing), MathF.Floor(camera.Position.Z / spacing)) - new Vector3(8);
+            if (BitConverter.SingleToInt32Bits(key.W) != level ||
+                ((x & 15) + (y & 15) * 16 + (z & 15) * 256) != probe % 4096 ||
+                x < origin.X || x >= origin.X + 16 || y < origin.Y || y >= origin.Y + 16 || z < origin.Z || z >= origin.Z + 16)
+                throw new InvalidOperationException("Stale or incorrectly wrapped probe cell.");
+            for (int lobe = 2; lobe < 14; lobe++) {
+                var value = probeData[probe * 14 + lobe];
+                if (!float.IsFinite(value.X) || !float.IsFinite(value.Y) || !float.IsFinite(value.Z))
+                    throw new InvalidOperationException("Non-finite probe fallback data.");
+            }
+        }
+        if (validProbes == 0) throw new InvalidOperationException("Probe fallback did not initialize any probes.");
+        Console.WriteLine($"[Probes] {validProbes:N0} valid probes; lighting and depth moments finite.");
         if (args.Contains("capture")) FrameCapture.Save(ctx, offscreenTarget, $"/tmp/nativegiya-{sceneIndex}.png");
         Console.WriteLine($"[Validation] {preset.Label}: {frameCount} completed GPU frames, {benchmark.Elapsed.TotalMilliseconds/frameCount:F2} ms/frame wall time (includes CPU and cold initialization), steady {steadyMilliseconds / Math.Max(1,frameCount-8):F2} ms/frame.");
 

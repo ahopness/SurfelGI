@@ -97,15 +97,12 @@ fn envEquirectUV(dirW: vec3f) -> vec2f {
     return vec2f(uCoord, vCoord);
 }
 
+#include "Common/gi_radiance.wgsl"
+
 fn sampleEnvEquirect(dirW: vec3f, lod: f32) -> vec3f {
     let uv = envEquirectUV(dirW);
     let hdr = textureSampleLevel(envTexture, envSampler, uv, lod).rgb;
-    let lum = dot(hdr, vec3f(0.2126, 0.7152, 0.0722));
-    let knee = 5.0;
-    let maxVal = 15.0;
-    if (lum <= knee) { return hdr; }
-    let compressed = knee + (maxVal - knee) * (1.0 - exp(-(lum - knee) / (maxVal - knee)));
-    return hdr * (compressed / lum);
+    return gi_environment_radiance(hdr);
 }
 
 fn calculate_luma(c: vec3f) -> f32 {

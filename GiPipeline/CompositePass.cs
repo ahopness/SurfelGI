@@ -27,7 +27,8 @@ public struct CompositeUniforms
     public float ShadowBias;
     public float Exposure;
     public uint CsmEnabled;
-    public uint Pad0;
+    public uint SourceMode;
+    public Vector4 AmbientParams;
 }
 
 public unsafe class CompositePass : IDisposable
@@ -135,7 +136,9 @@ public unsafe class CompositePass : IDisposable
             IndirectIntensity = transport.IndirectIntensity,
             ShadowBias = light.ShadowBias,
             Exposure = MathF.Max(0f, transport.Exposure),
-            CsmEnabled = light.CastShadow ? 1u : 0u
+            CsmEnabled = light.CastShadow ? 1u : 0u,
+            SourceMode = (uint)transport.SourceMode,
+            AmbientParams = new Vector4(MathF.Max(0, transport.EnvIntensity), MathF.Max(0, transport.EnvLod), 0, 0)
         };
         _uniformBuffer.UploadSingle(in uData);
 

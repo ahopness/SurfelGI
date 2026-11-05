@@ -1,5 +1,6 @@
 #include "Common/constants.wgsl"
 #include "Common/grid_helpers.wgsl"
+#include "Common/probe_fallback.wgsl"
 
 struct ResolveUniforms {
     projInv: mat4x4f,
@@ -11,6 +12,8 @@ struct ResolveUniforms {
     height: u32,
     resolveOffset: u32,
     frame: u32,
+    sourceMode: u32,
+    pad0: u32, pad1: u32, pad2: u32,
 };
 
 @group(0) @binding(0) var<uniform> u: ResolveUniforms;
@@ -23,26 +26,37 @@ struct ResolveUniforms {
 @group(0) @binding(7) var<storage, read> surfelDepth: array<vec4f>;
 @group(0) @binding(8) var outputTex: texture_storage_2d<rgba16float, write>;
 
+@group(0) @binding(9) var<storage, read> probes: array<FallbackProbe>;
+
+#include "Common/probe_gather.wgsl"
+#include "Common/gi_resolve_helpers.wgsl"
+
 fn load_radial_depth(index: u32) -> vec4f { return surfelDepth[index]; }
 #include "Common/radial_depth.wgsl"
+
+struct SurfelResolveSample {
+    weightedLight: vec3f,
+    weight: f32,
+    geometryWeight: f32,
+};
 
 fn resolveIrradiance(
     sid: i32,
     worldPos: vec3f,
     pixNormal: vec3f
-) -> vec4f {
+) -> SurfelResolveSample {
     let s = surfels[sid];
     let sNor = s.normal;
     let weightDir = dot(sNor, pixNormal);
     if (weightDir <= 0.0) {
-        return vec4f(0.0);
+        return SurfelResolveSample();
     }
 
     let momentsIndex = u32(sid) + u.resolveOffset;
     let m = moments[momentsIndex];
     let samples = m.irradiance.w;
     if (samples <= 0.0) {
-        return vec4f(0.0);
+        return SurfelResolveSample();
     }
 
     let sPos = s.posb.xyz;
@@ -52,7 +66,7 @@ fn resolveIrradiance(
     let dV = worldPos - sPosWithOffset;
     let distSq = dot(dV, dV);
     if (distSq >= sRad * sRad) {
-        return vec4f(0.0);
+        return SurfelResolveSample();
     }
     let distLen = sqrt(distSq);
 
@@ -63,7 +77,7 @@ fn resolveIrradiance(
     let weightGeom = (1.0 - smoothstep(0.0, sRad, mahalanobisDist));
     var geomW = weightGeom * weightDir;
     if (geomW <= 0.0) {
-        return vec4f(0.0);
+        return SurfelResolveSample();
     }
 
     let sIrr = m.irradiance.xyz;
@@ -78,7 +92,7 @@ fn resolveIrradiance(
     let conf = clamp(samples / TARGET_SAMPLE_COUNT, 0.0, 1.0);
     let wFinal = geomW * fade * conf;
 
-    return vec4f(sIrr * wFinal, wFinal);
+    return SurfelResolveSample(sIrr * wFinal, wFinal, geomW);
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -103,6 +117,17 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
         let viewPos = reconstruct_view_position(uv, depth, u.projInv);
         let worldPos = (u.camWorld * vec4f(viewPos, 1.0)).xyz;
 
+        // Ambient is evaluated from the skybox in the composite, without cache reads.
+        if (u.sourceMode == 0u) {
+            textureStore(outputTex, vec2i(id.xy), vec4f(0.0, 0.0, 0.0, 1.0));
+            return;
+        }
+        if (u.sourceMode == 1u) {
+            let fallback = gatherProbeFallback(worldPos, pixNormal);
+            textureStore(outputTex, vec2i(id.xy), vec4f(fallback.rgb, fallback.w));
+            return;
+        }
+
         let pRel = worldPos - u.gridOrigin.xyz;
         let gridCoord = surfel_pos_to_grid_coord(pRel);
         let c4 = surfel_grid_coord_to_c4(gridCoord);
@@ -118,6 +143,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 
         var sumLight = vec3f(0.0);
         var sumWeight = 0.0;
+        var sumGeometryWeight = 0.0;
         var bestContrib = 0.0;
         var bestSid: i32 = -1;
         let capacity = i32(arrayLength(&surfels));
@@ -126,18 +152,29 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
             let sid = offsetsAndList[OFFSETS_AND_LIST_START + start + i];
             if (sid >= 0 && sid < capacity && surfels[sid].age < SURFEL_TTL) {
                 let irr = resolveIrradiance(sid, worldPos, pixNormal);
-                if (irr.w > bestContrib) {
-                    bestContrib = irr.w;
+                if (irr.weight > bestContrib) {
+                    bestContrib = irr.weight;
                     bestSid = sid;
                 }
-                sumLight += irr.xyz;
-                sumWeight += irr.w;
+                sumLight += irr.weightedLight;
+                sumWeight += irr.weight;
+                sumGeometryWeight += irr.geometryWeight;
             }
         }
 
-        let light = select(vec3f(0.0), sumLight / sumWeight, sumWeight > 1e-5);
-        let coverage = smoothstep(0.0, 0.01, sumWeight);
-        outColor = vec4f(light, coverage);
+        let light = sumLight / max(sumWeight, 1e-5);
+        let coverage = surfel_resolve_confidence(sumGeometryWeight, sumWeight);
+        var resolved = light;
+        var resolvedCoverage = coverage;
+        if (u.sourceMode == 3u && coverage < 0.999) {
+            let fallback = gatherProbeFallback(worldPos, pixNormal);
+            if (fallback.w > 0.0) {
+                let blended = blend_surfel_probe(light, coverage, fallback);
+                resolved = blended.rgb;
+                resolvedCoverage = blended.w;
+            }
+        }
+        outColor = vec4f(resolved, resolvedCoverage);
 
         let dominance = bestContrib / (sumWeight + 1e-5);
         if (bestSid >= 0 && dominance > 0.5) {
