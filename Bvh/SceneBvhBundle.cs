@@ -36,6 +36,7 @@ public class SceneBvhBundle : IDisposable
         var allPositions = new List<Vector4>();
         var allAttributes = new List<Vector4>();
         var allTriIndices = new List<Vector4>();
+        Span<uint> triangle = stackalloc uint[3];
 
         foreach (var inst in scene.Meshes)
         {
@@ -47,35 +48,31 @@ public class SceneBvhBundle : IDisposable
             {
                 var mat = grp.MaterialIndex < inst.Materials.Count ? inst.Materials[grp.MaterialIndex] : null;
                 int matId = mat != null && materialIdByUuid.TryGetValue(mat.Uuid, out int foundId) ? foundId : 0;
+                // Material IDs live in the vertex attributes, so share vertices
+                // within a material group, never across material boundaries.
+                var vertexRemap = new Dictionary<uint, uint>();
 
                 int end = Math.Min(mesh.Indices.Length, grp.StartIndex + grp.IndexCount);
                 for (int i = grp.StartIndex; i + 2 < end; i += 3)
                 {
-                    uint idx0 = mesh.Indices[i];
-                    uint idx1 = mesh.Indices[i + 1];
-                    uint idx2 = mesh.Indices[i + 2];
-
-                    Vector3 p0 = Vector3.Transform(mesh.Vertices[idx0].Position, world);
-                    Vector3 p1 = Vector3.Transform(mesh.Vertices[idx1].Position, world);
-                    Vector3 p2 = Vector3.Transform(mesh.Vertices[idx2].Position, world);
-
-                    Vector2 uv0 = mesh.Vertices[idx0].UV;
-                    Vector2 uv1 = mesh.Vertices[idx1].UV;
-                    Vector2 uv2 = mesh.Vertices[idx2].UV;
-
-                    uint baseV = (uint)allPositions.Count;
-                    allPositions.Add(new Vector4(p0, 0f));
-                    allPositions.Add(new Vector4(p1, 0f));
-                    allPositions.Add(new Vector4(p2, 0f));
-
-                    allAttributes.Add(new Vector4(uv0.X, uv0.Y, matId, 0f));
-                    allAttributes.Add(new Vector4(uv1.X, uv1.Y, matId, 0f));
-                    allAttributes.Add(new Vector4(uv2.X, uv2.Y, matId, 0f));
+                    for (int corner = 0; corner < 3; corner++)
+                    {
+                        uint sourceIndex = mesh.Indices[i + corner];
+                        if (!vertexRemap.TryGetValue(sourceIndex, out uint targetIndex))
+                        {
+                            targetIndex = (uint)allPositions.Count;
+                            vertexRemap.Add(sourceIndex, targetIndex);
+                            var vertex = mesh.Vertices[sourceIndex];
+                            allPositions.Add(new Vector4(Vector3.Transform(vertex.Position, world), 0f));
+                            allAttributes.Add(new Vector4(vertex.UV.X, vertex.UV.Y, matId, 0f));
+                        }
+                        triangle[corner] = targetIndex;
+                    }
 
                     allTriIndices.Add(new Vector4(
-                        BitConverter.UInt32BitsToSingle(baseV),
-                        BitConverter.UInt32BitsToSingle(baseV + 1),
-                        BitConverter.UInt32BitsToSingle(baseV + 2),
+                        BitConverter.UInt32BitsToSingle(triangle[0]),
+                        BitConverter.UInt32BitsToSingle(triangle[1]),
+                        BitConverter.UInt32BitsToSingle(triangle[2]),
                         0f));
                 }
             }
