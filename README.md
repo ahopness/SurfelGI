@@ -1,5 +1,9 @@
 # SurfelGI
 
+<img width="1590" height="891" alt="Screenshot From 2026-11-05 09-38-11" src="https://github.com/user-attachments/assets/8d08d78f-67a7-4749-811d-c13bda16cc43" />
+<img width="1590" height="891" alt="Screenshot From 2026-11-05 09-37-41" src="https://github.com/user-attachments/assets/8654332b-ec82-4b98-9283-42d11bdf3fbb" />
+
+
 An experimental native C# renderer for real-time surfel global illumination. It uses WebGPU compute shaders through `wgpu-native`, with rasterized direct lighting and ray-traced indirect lighting cached on surface elements (surfels).
 
 This repository is a native fork of [Webgiya](https://github.com/jure/webgiya), a WebGPU and Three.js experiment exploring surfel-based global illumination on the web. The original project’s [technical write-up](https://juretriglav.si/surfel-based-global-illumination-on-the-web) explains the approach, and its [live demo](https://jure.github.io/webgiya/) remains the web version. This fork replaces the browser application with a standalone C# renderer and includes its own scene, BVH, rendering, and diagnostic code.
