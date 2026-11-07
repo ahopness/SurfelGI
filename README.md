@@ -1,3 +1,13 @@
+## Probe fallback
+
+`ProbeFallbackPass` maintains five toroidal 16³ probe grids with 1, 2, 4, 8, and 16 world-unit spacing. The cache uses approximately 4.4 MiB, storing six diffuse lighting lobes, six depth-moment pairs, world-cell tags, and bounded relocation offsets per probe. Each frame refreshes a spatially permuted 1/16 cohort (1,280 probes × 8 rays = 10,240 primary rays, plus applicable direct-light shadow rays). Lighting is temporally accumulated; initial filling and resets are progressive over sixteen frames rather than tracing the entire cache at once.
+
+Misses sample the renderer's HDR skybox with the GI environment intensity and mip settings, using the same HDR outlier compression as the surfel integrator. Hits evaluate shadowed direct diffuse lighting without additional surfel GI lookups. A majority of back-face hits triggers best-effort bounded relocation; embedded probes remain invalid. Camera scrolling invalidates reused slots by world-cell tag. Surfel resets and scene changes reset the probe cache too.
+
+The resolve gathers eight neighboring probes only when surfel confidence is insufficient. Sparse or occluded neighborhoods contribute according to their interpolation support, and coarser levels fill the remainder; a tiny surviving sample cannot become a full-strength estimate just by normalization. Surfel overlap and lighting maturity are tracked separately so young surfels do not prematurely suppress the fallback. Provisional surfel lighting is retained where the probe cache has not initialized yet. Six-direction depth moments deliberately permit leakage. This is a coarse, slowly refreshed hole filler, so thin walls, sudden lighting changes, and fast camera motion can expose inaccuracies. It does not guarantee indirect lighting where all levels remain invalid or have not initialized yet.
+
+---
+
 # SurfelGI
 
 <img width="1590" height="891" alt="Screenshot From 2026-11-05 09-38-11" src="https://github.com/user-attachments/assets/8d08d78f-67a7-4749-811d-c13bda16cc43" />
@@ -66,14 +76,6 @@ Assets load at runtime and are not downloaded during build. The loader searches 
 | `M` | Cycle screen debug views |
 
 The presets, in keyboard order, are Cornell Box, Leonardo, Occlusion test, Marble Bust, Sponza (Heavy), and Sponza with Beast. The overlay also provides combined, direct-only, and indirect-only output; half-resolution GI; staggered updates; sun controls; integrator settings; and radial occlusion controls.
-
-## Probe fallback
-
-`ProbeFallbackPass` maintains five toroidal 16³ probe grids with 1, 2, 4, 8, and 16 world-unit spacing. The cache uses approximately 4.4 MiB, storing six diffuse lighting lobes, six depth-moment pairs, world-cell tags, and bounded relocation offsets per probe. Each frame refreshes a spatially permuted 1/16 cohort (1,280 probes × 8 rays = 10,240 primary rays, plus applicable direct-light shadow rays). Lighting is temporally accumulated; initial filling and resets are progressive over sixteen frames rather than tracing the entire cache at once.
-
-Misses sample the renderer's HDR skybox with the GI environment intensity and mip settings, using the same HDR outlier compression as the surfel integrator. Hits evaluate shadowed direct diffuse lighting without additional surfel GI lookups. A majority of back-face hits triggers best-effort bounded relocation; embedded probes remain invalid. Camera scrolling invalidates reused slots by world-cell tag. Surfel resets and scene changes reset the probe cache too.
-
-The resolve gathers eight neighboring probes only when surfel confidence is insufficient. Sparse or occluded neighborhoods contribute according to their interpolation support, and coarser levels fill the remainder; a tiny surviving sample cannot become a full-strength estimate just by normalization. Surfel overlap and lighting maturity are tracked separately so young surfels do not prematurely suppress the fallback. Provisional surfel lighting is retained where the probe cache has not initialized yet. Six-direction depth moments deliberately permit leakage. This is a coarse, slowly refreshed hole filler, so thin walls, sudden lighting changes, and fast camera motion can expose inaccuracies. It does not guarantee indirect lighting where all levels remain invalid or have not initialized yet.
 
 ## GPU self-test
 
