@@ -5,9 +5,9 @@
 
 struct AllocateUniforms {
     readOffset: u32,
-    tileWidth: u32,
     frame: u32,
     tileCount: u32,
+    padding: u32,
     cameraPosition: vec4f,
 };
 
@@ -25,27 +25,27 @@ struct AllocateUniforms {
 @group(0) @binding(11) var<storage, read> tileIrradiance: array<vec4f>;
 
 @group(0) @binding(12) var<storage,read_write> touched: array<atomic<i32>>;
+@group(0) @binding(13) var<storage, read> selectedTiles: array<i32>;
 
-// Candidates all saw the previous grid. Resolve local conflicts before claiming
-// a pool slot so adjacent tiles do not plant multiple surfels on the same patch.
-fn overlaps_preferred_candidate(idx: u32, v: Vertex) -> bool {
-    let width = i32(u.tileWidth);
-    let tile = vec2i(i32(idx) % width, i32(idx) / width);
+// Candidates all saw the previous grid. Compare the scheduled batch in world
+// space so even distant screen tiles cannot fill the same patch with duplicates.
+fn overlaps_preferred_candidate(idx: u32, v: Vertex, scheduledCount: u32) -> bool {
     let priority = hash1(idx ^ u.frame);
     let radius = surfel_radius_for_pos(v.position, u.cameraPosition.xyz);
-    for (var dy = -1; dy <= 1; dy++) {
-        for (var dx = -1; dx <= 1; dx++) {
-            if (dx == 0 && dy == 0) { continue; }
-            let t = tile + vec2i(dx, dy);
-            if (t.x < 0 || t.y < 0 || t.x >= width) { continue; }
-            let j = u32(t.y * width + t.x);
-            if (j >= u.tileCount || tileAlloc[j * 2u] != 1) { continue; }
-            let otherPriority = hash1(j ^ u.frame);
-            if (otherPriority > priority || (otherPriority == priority && j > idx)) { continue; }
-            let other = unpack_vertex(candPacked[j]);
-            let offset = other.position - v.position;
-            if (dot(v.normal, other.normal) > 0.96 && length(offset) < radius * 0.30 &&
-                abs(dot(offset, v.normal)) < radius * 0.04) { return true; }
+    let maxDistance = radius * 0.30;
+    let maxPlaneOffset = radius * 0.04;
+    for (var lane = 0u; lane < scheduledCount; lane++) {
+        let otherTile = selectedTiles[lane];
+        if (otherTile < 0 || u32(otherTile) == idx) { continue; }
+        let j = u32(otherTile);
+        let otherPriority = hash1(j ^ u.frame);
+        if (otherPriority > priority || (otherPriority == priority && j > idx)) { continue; }
+        let other = candPacked[j];
+        let offset = other.data0.xyz - v.position;
+        if (dot(offset, offset) < maxDistance * maxDistance &&
+            abs(dot(offset, v.normal)) < maxPlaneOffset &&
+            dot(v.normal, unpack_vertex(other).normal) > 0.96) {
+            return true;
         }
     }
     return false;
@@ -53,18 +53,17 @@ fn overlaps_preferred_candidate(idx: u32, v: Vertex) -> bool {
 
 @compute @workgroup_size(64, 1, 1)
 fn main(@builtin(global_invocation_id) id: vec3u) {
-    let idx = id.x;
-    if (idx >= u.tileCount) {
+    let scheduledCount = min(u.tileCount, arrayLength(&selectedTiles));
+    if (id.x >= scheduledCount || selectedTiles[id.x] < 0) {
         return;
     }
 
+    let idx = u32(selectedTiles[id.x]);
     let capacity = i32(arrayLength(&surfels));
     let base = idx * 2u;
-    let spawnFlag = tileAlloc[base];
+    let candidate = unpack_vertex(candPacked[idx]);
 
-    if (spawnFlag == 1) {
-        let candidate = unpack_vertex(candPacked[idx]);
-        if (overlaps_preferred_candidate(idx, candidate)) { return; }
+    if (!overlaps_preferred_candidate(idx, candidate, scheduledCount)) {
         let prevAlloc = atomicAdd(&poolAlloc[0], 1);
         if (prevAlloc < capacity) {
             let surfelIdx = poolBuf[prevAlloc];

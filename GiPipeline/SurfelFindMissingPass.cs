@@ -34,8 +34,8 @@ public unsafe class SurfelFindMissingPass : IDisposable
     private readonly ComputePipeline* _pipeline;
     private readonly SurfelSpawnScheduler _scheduler;
 
-    public int TileWidth { get; private set; }
     public Vector3 CameraPosition { get; private set; }
+    public GpuBuffer<int> SelectedTileBuffer => _scheduler.SelectedTileBuffer;
     public GpuBuffer<int> TileAllocBuffer { get; }
     public GpuBuffer<Vector4> CandidatePackedBuffer { get; }
     public GpuBuffer<Vector4> TileIrradianceBuffer { get; }
@@ -77,7 +77,6 @@ public unsafe class SurfelFindMissingPass : IDisposable
         int tileH = Math.Max(1, (height + GroupSizeY - 1) / GroupSizeY);
         int tileCount = tileW * tileH;
 
-        TileWidth = tileW;
         CameraPosition = camera.Position;
         EnsureTileBuffers(tileCount);
 

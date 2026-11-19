@@ -9,9 +9,9 @@ namespace SurfelGI.GiPipeline;
 public struct AllocateUniforms
 {
     public uint ReadOffset;
-    public uint TileWidth;
     public uint Frame;
     public uint TileCount;
+    public uint Padding;
     public Vector4 CameraPosition;
 }
 
@@ -44,14 +44,13 @@ public unsafe class SurfelAllocatePass : IDisposable
         var uData = new AllocateUniforms
         {
             ReadOffset = readOffset,
-            TileWidth = (uint)find.TileWidth,
             CameraPosition = new Vector4(find.CameraPosition, 1f),
             Frame = _ctx.FrameIndex,
             TileCount = (uint)tileCount
         };
         _uniformBuffer.UploadSingle(in uData);
 
-        Span<BindGroupEntry> mainEntries = stackalloc BindGroupEntry[12]
+        Span<BindGroupEntry> mainEntries = stackalloc BindGroupEntry[13]
         {
             _uniformBuffer.AsBindGroupEntry(0),
             pool.PoolAllocAtomicBuffer.AsBindGroupEntry(1),
@@ -64,7 +63,8 @@ public unsafe class SurfelAllocatePass : IDisposable
             find.TileAllocBuffer.AsBindGroupEntry(9),
             find.CandidatePackedBuffer.AsBindGroupEntry(10),
             find.TileIrradianceBuffer.AsBindGroupEntry(11),
-            pool.TouchedAtomicBuffer.AsBindGroupEntry(12)
+            pool.TouchedAtomicBuffer.AsBindGroupEntry(12),
+            find.SelectedTileBuffer.AsBindGroupEntry(13)
         };
 
         Span<BindGroupEntry> syncEntries = stackalloc BindGroupEntry[2]
@@ -81,7 +81,7 @@ public unsafe class SurfelAllocatePass : IDisposable
 
         _ctx.Wgpu.ComputePassEncoderSetPipeline(pass, _mainPipeline);
         _ctx.Wgpu.ComputePassEncoderSetBindGroup(pass, 0, bgMain, 0, null);
-        uint groups = (uint)((tileCount + 63) / 64);
+        uint groups = (Math.Min((uint)tileCount, SurfelSpawnScheduler.SpawnBudget) + 63) / 64;
         _ctx.Wgpu.ComputePassEncoderDispatchWorkgroups(pass, groups, 1, 1);
 
         _ctx.Wgpu.ComputePassEncoderSetPipeline(pass, _syncPipeline);

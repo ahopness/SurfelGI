@@ -11,10 +11,15 @@ public unsafe sealed class SurfelSpawnScheduler : IDisposable
     private readonly GpuBuffer<uint> _uniform;
     private readonly ComputePipeline* _select;
     private readonly ComputePipeline* _finalize;
+
+    public GpuBuffer<int> SelectedTileBuffer { get; }
+
     public SurfelSpawnScheduler(WebGpuContext ctx, ShaderManager shaders)
     {
         _ctx = ctx; _shaders = shaders;
         _uniform = new GpuBuffer<uint>(ctx, 4, BufferUsage.Uniform, "SpawnScheduleUniforms");
+        SelectedTileBuffer = new GpuBuffer<int>(ctx, (int)SpawnBudget,
+            BufferUsage.Storage | BufferUsage.CopySrc, "SelectedSpawnTiles");
         _select = shaders.GetOrCreateComputePipeline("surfel_schedule.wgsl", "select_candidates");
         _finalize = shaders.GetOrCreateComputePipeline("surfel_schedule.wgsl", "finalize_candidates");
     }
@@ -22,11 +27,16 @@ public unsafe sealed class SurfelSpawnScheduler : IDisposable
     {
         if (tileCount <= 0) return;
         _uniform.Upload(new uint[] { (uint)tileCount, frame, SpawnBudget, 0 });
-        Span<BindGroupEntry> entries = stackalloc BindGroupEntry[] { _uniform.AsBindGroupEntry(0), tiles.AsBindGroupEntry(1) };
+        Span<BindGroupEntry> entries = stackalloc BindGroupEntry[]
+        {
+            _uniform.AsBindGroupEntry(0),
+            tiles.AsBindGroupEntry(1),
+            SelectedTileBuffer.AsBindGroupEntry(2)
+        };
         var desc = new ComputePassDescriptor();
         var pass = _ctx.Wgpu.CommandEncoderBeginComputePass(encoder, &desc);
         Dispatch(pass, _select, entries, (SpawnBudget+63)/64);
-        Dispatch(pass, _finalize, entries, ((uint)tileCount+63)/64);
+        Dispatch(pass, _finalize, entries[..2], ((uint)tileCount+63)/64);
         _ctx.Wgpu.ComputePassEncoderEnd(pass); _ctx.Wgpu.ComputePassEncoderRelease(pass);
     }
     private void Dispatch(ComputePassEncoder* pass, ComputePipeline* pipeline, ReadOnlySpan<BindGroupEntry> entries, uint groups)
@@ -37,5 +47,9 @@ public unsafe sealed class SurfelSpawnScheduler : IDisposable
         _ctx.Wgpu.ComputePassEncoderDispatchWorkgroups(pass, groups, 1, 1);
         _ctx.Wgpu.BindGroupRelease(bg);
     }
-    public void Dispose() => _uniform.Dispose();
+    public void Dispose()
+    {
+        SelectedTileBuffer.Dispose();
+        _uniform.Dispose();
+    }
 }
